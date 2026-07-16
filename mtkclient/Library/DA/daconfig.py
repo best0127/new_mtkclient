@@ -216,6 +216,17 @@ class DAconfig(metaclass=LogBase):
                                 self.config.chipconfig.damode = DAmodes.XML
                             self.da_loader = loader
                             self.loader = loader.loader
+        if self.da_loader is None and self.config.hwcode in self.dasetup:
+            self.info("dacode not found, falling back to hwcode")
+            loaders = self.dasetup[self.config.hwcode]
+            for loader in loaders:
+                if loader.hw_version <= self.config.hwver or self.config.hwver == 0:
+                    if loader.sw_version <= self.config.swver or self.config.swver == 0:
+                        if self.da_loader is None:
+                            if loader.v6:
+                                self.config.chipconfig.damode = DAmodes.XML
+                            self.da_loader = loader
+                            self.loader = loader.loader
         if self.da_loader is None and dacode != 0x6261:
             self.error("No da_loader config set up")
         self.mtk.daloader.daconfig.da_loader = self.da_loader

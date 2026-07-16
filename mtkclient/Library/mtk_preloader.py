@@ -935,9 +935,15 @@ class Preloader(metaclass=LogBase):
             if res == self.Cmd.GET_BL_VER.value:
                 self.usbwrite(self.Cmd.GET_ME_ID.value)  # 0xE1
                 if self.usbread(1) == self.Cmd.GET_ME_ID.value:
-                    length = unpack(">I", self.usbread(4))[0]
+                    lenbytes = self.usbread(4)
+                    if len(lenbytes) < 4:
+                        return None
+                    length = unpack(">I", lenbytes)[0]
                     self.mtk.config.meid = self.usbread(length)
-                    status = unpack("<H", self.usbread(2))[0]
+                    statusbytes = self.usbread(2)
+                    if len(statusbytes) < 2:
+                        return None
+                    status = unpack("<H", statusbytes)[0]
                     if status == 0:
                         self.config.is_brom = True
                         return self.mtk.config.meid
@@ -946,9 +952,15 @@ class Preloader(metaclass=LogBase):
             elif int.from_bytes(res, 'little') > 2:
                 self.usbwrite(self.Cmd.GET_ME_ID.value)
                 if self.usbread(1) == self.Cmd.GET_ME_ID.value:
-                    length = unpack(">I", self.usbread(4))[0]
+                    lenbytes = self.usbread(4)
+                    if len(lenbytes) < 4:
+                        return None
+                    length = unpack(">I", lenbytes)[0]
                     self.mtk.config.meid = self.usbread(length)
-                    status = unpack("<H", self.usbread(2))[0]
+                    statusbytes = self.usbread(2)
+                    if len(statusbytes) < 2:
+                        return None
+                    status = unpack("<H", statusbytes)[0]
                     self.config.is_brom = False
                     if status == 0:
                         return self.mtk.config.meid
@@ -963,9 +975,15 @@ class Preloader(metaclass=LogBase):
             if res == self.Cmd.GET_BL_VER.value:
                 self.usbwrite(self.Cmd.GET_SOC_ID.value)  # 0xE7
                 if self.usbread(1) == self.Cmd.GET_SOC_ID.value:
-                    length = unpack(">I", self.usbread(4))[0]
+                    lenbytes = self.usbread(4)
+                    if len(lenbytes) < 4:
+                        return b""
+                    length = unpack(">I", lenbytes)[0]
                     self.mtk.config.socid = self.usbread(length)
-                    status = unpack("<H", self.usbread(2))[0]
+                    statusbytes = self.usbread(2)
+                    if len(statusbytes) < 2:
+                        return b""
+                    status = unpack("<H", statusbytes)[0]
                     if status == 0:
                         return self.mtk.config.socid
                     else:
@@ -973,9 +991,15 @@ class Preloader(metaclass=LogBase):
             elif int.from_bytes(res, 'little') > 2:
                 self.usbwrite(self.Cmd.GET_SOC_ID.value)
                 if self.usbread(1) == self.Cmd.GET_SOC_ID.value:
-                    length = unpack(">I", self.usbread(4))[0]
+                    lenbytes = self.usbread(4)
+                    if len(lenbytes) < 4:
+                        return b""
+                    length = unpack(">I", lenbytes)[0]
                     self.mtk.config.socid = self.usbread(length)
-                    status = unpack("<H", self.usbread(2))[0]
+                    statusbytes = self.usbread(2)
+                    if len(statusbytes) < 2:
+                        return b""
+                    status = unpack("<H", statusbytes)[0]
                     self.config.is_brom = False
                     if status == 0:
                         return self.mtk.config.socid

@@ -234,7 +234,10 @@ class Preloader(metaclass=LogBase):
             self.info("\tHW Ver:\t\t\t" + hex(self.config.hwver))
             self.info("\tSW Ver:\t\t\t" + hex(self.config.swver))
         if not self.config.iot:
-            meid = self.get_meid()
+            if self.config.hwcode == 0x6899 or self.config.hwcode == 0x1357:
+                meid = None
+            else:
+                meid = self.get_meid()
         if meid is not None:
             self.config.hwparam = HwParam(self.mtk.config, self.config.meid.hex(), self.mtk.config.hwparam_path)
         else:

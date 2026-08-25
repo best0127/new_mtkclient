@@ -14,3 +14,8 @@ DA_*.bin
 # Pyinstaller stuff
 build
 dist
+
+hwparam.json
+logs
+log.txt
+*.log

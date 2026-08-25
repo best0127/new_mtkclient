@@ -1064,10 +1064,14 @@ class Dxcc(metaclass=LogBase):
         self.write32(self.dxcc_base + self.DX_HOST_ICR, 4)
 
     def sb_crypto_wait(self):
+        cnt = 0
         while True:
             value = self.read32(self.dxcc_base + self.DX_HOST_IRR)
             if value != 0:
                 return value
+            cnt += 1
+            if cnt > 0x100000:
+                return 0
 
     def sasi_paldmaunmap(self, value1):
         return
@@ -1079,12 +1083,21 @@ class Dxcc(metaclass=LogBase):
 
     def sasi_sb_adddescsequence(self, data):
         if self.ssr_clk_base:
+            cnt = 0
             while True:
                 if self.read32(self.dxcc_base + self.DX_DSCRPTR_QUEUE0_CONTENT) & 0xF != 0:
                     break
+                cnt += 1
+                if cnt > 0x100000:
+                    break
         else:
+            cnt = 0
             while True:
                 if self.read32(self.dxcc_base + self.DX_DSCRPTR_QUEUE0_CONTENT) << 0x1C != 0:
+                    break
+                cnt += 1
+                if cnt > 0x100000:
+                    self.warning("DXCC: descriptor queue never freed up, submitting anyway.")
                     break
         self.write32(self.dxcc_base + self.DX_DSCRPTR_QUEUE0_WORD0, data[0])
         self.write32(self.dxcc_base + self.DX_DSCRPTR_QUEUE0_WORD1, data[1])
@@ -1104,6 +1117,11 @@ class Dxcc(metaclass=LogBase):
         self.da_payload_addr = setup.da_payload_addr
 
         self.reg = DxccReg(setup)
+
+    def buf_read32(self, addr, dwords=4):
+        """Read the derived-key output buffer. Overridable per-instance to
+        route through a different transport (e.g. CUSTOMMEMR)."""
+        return self.read32(addr, dwords)
 
     def cc_special_init(self, value):
         if value==3:
@@ -1205,7 +1223,7 @@ class Dxcc(metaclass=LogBase):
         for ctr in range(0, key_sz // 16):
             seed = salt + pack("<B", ctr)
             paddr = self.sbrom_aes_cmac(1, 0x0, seed, 0x0, len(seed), dstaddr)
-            for field in self.read32(paddr, 4):
+            for field in self.buf_read32(paddr, 4):
                 fdekey += pack("<I", field)
         self.tzcc_clk(0)
         return fdekey
@@ -1418,7 +1436,7 @@ class Dxcc(metaclass=LogBase):
             dstaddr = 0x20F1000
         self.sbrom_sha256(_buffer=data, destaddr=dstaddr)
         result = bytearray()
-        for field in self.read32(dstaddr, 8):
+        for field in self.buf_read32(dstaddr, 8):
             result.extend(pack("<I", field))
         return result
 
@@ -1436,7 +1454,7 @@ class Dxcc(metaclass=LogBase):
             _buffer = pack("<B", i + 1) + label + b"\x00" + salt + pack("<B", (8 * requestedlen) & 0xFF)
             dstaddr = self.sbrom_aes_cmac(aeskeytype, 0x0, _buffer[:bufferlen], 0, bufferlen, destaddr)
             if dstaddr != 0:
-                for field in self.read32(dstaddr, 4):
+                for field in self.buf_read32(dstaddr, 4):
                     result.extend(pack("<I", field))
         return result
 
@@ -1470,7 +1488,7 @@ class Dxcc(metaclass=LogBase):
                 if paddr == 0:
                     return bytearray()
                 block = bytearray()
-                for field in self.read32(paddr, 4):
+                for field in self.buf_read32(paddr, 4):
                     block.extend(pack("<I", field))
                 chunksz = min(remaining, AES_BLOCK_SIZE_IN_BYTES)
                 result.extend(block[:chunksz])
@@ -1493,7 +1511,16 @@ class Dxcc(metaclass=LogBase):
             self.writemem(key_sram_addr, internal_key)
         if dma_mode != 0:
             dma_mode = dma_mode
-        self.writemem(input_sram_addr, data_in[:bufferlen])
+        wdata = bytes(data_in[:bufferlen])
+        self.writemem(input_sram_addr, wdata)
+        rdata = self.read32(input_sram_addr, (len(wdata) + 3) // 4)
+        if isinstance(rdata, list):
+            chk = b"".join([pack("<I", val) for val in rdata])[:len(wdata)]
+            if chk != wdata:
+                self.warning(f"DXCC: SRAM input verify FAILED at {hex(input_sram_addr)}: " +
+                             f"wrote {wdata.hex()}, read {chk.hex()}")
+        else:
+            self.warning(f"DXCC: SRAM input readback failed at {hex(input_sram_addr)}")
         if self.sbrom_aes_cmac_driver(aes_key_type, p_internal_key, input_sram_addr, dma_mode, bufferlen, sram_addr):
             return sram_addr
         return 0
@@ -1512,13 +1539,24 @@ class Dxcc(metaclass=LogBase):
         data.append(0x100)  # 4
         data.append((destptr >> 32) << 16)  # 5
         self.sasi_sb_adddescsequence(data)
+        cnt = 0
         while True:
             if self.sb_crypto_wait() & 4 != 0:
                 break
+            cnt += 1
+            if cnt > 0x100000:
+                self.error("DXCC: completion timeout, IRR bit2 never set.")
+                return 0xF6000002
+        cnt = 0
         while True:
             value = self.read32(self.dxcc_base + 0xBA0)
             if value != 0:
                 break
+            cnt += 1
+            if cnt > 0x100000:
+                self.error(f"DXCC: status timeout at {hex(self.dxcc_base + 0xBA0)}.")
+                return 0xF6000003
+        self.debug(f"DXCC: desc completed, status={hex(value)}")
         if value == 1:
             self.sb_hal_clear_interrupt_bit()
             self.sasi_paldmaunmap(val)
@@ -1530,8 +1568,11 @@ class Dxcc(metaclass=LogBase):
         iv_sram_addr = 0
         if aes_key_type == HwCryptoKey.ROOT_KEY:
             if ((self.read32(self.dxcc_base + self.DX_HOST_IRQ_TIMER_INITL) >> 8) & 1) != 0:
+                self.error("DXCC: root key is locked (IRQ_TIMER_INITL bit8 set), derived keys will be bogus.")
                 return False
-            if (self.read32(self.dxcc_base + self.DX_HOST_SEP_HOST_GPR4) >> 1) & 1 == 1:
+            gpr4 = self.read32(self.dxcc_base + self.DX_HOST_SEP_HOST_GPR4)
+            self.debug(f"DXCC: GPR4={hex(gpr4)}, root key size={(0x20 if (gpr4 >> 1) & 1 == 1 else 0x10)} bytes")
+            if (gpr4 >> 1) & 1 == 1:
                 key_size_in_bytes = 0x20  # SEP_AES_256_BIT_KEY_SIZE
             else:
                 key_size_in_bytes = 0x10  # SEP_AES_128_BIT_KEY_SIZE

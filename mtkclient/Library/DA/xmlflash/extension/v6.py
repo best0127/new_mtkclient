@@ -459,6 +459,14 @@ class XmlFlashExt(metaclass=LogBase):
                         da2patched = self.mem_patch(da2patched, allow_read_register, mov_w0_1)
                         self.info("Patched read_register / write_register")
                         patched = True
+                else:
+                    # Pre-patched / custom DA builds no longer contain the expected
+                    # instruction pattern (e.g. MT6983 custom DA uses MOVN X9 instead
+                    # of X8 and already stubs the R/W gate). Don't abort here,
+                    # otherwise the CUSTOM command hook is never installed and all
+                    # DA XML extensions fail to load.
+                    self.info("R/W register pattern not found, DA seems to be already patched.")
+                    patched = True
             else:
                 patched = True
 
@@ -1358,6 +1366,59 @@ class XmlFlashExt(metaclass=LogBase):
                 retval["fwkey"] = fwkey.hex()
             return retval
         if self.config.chipconfig.dxcc_base is not None:
+            # The dxcc derivation needs a SRAM buffer (default: da_payload_addr - 0x300)
+            # that we can write AND read back. Some custom DAs gate the per-word
+            # CUSTOMREGW/CUSTOMREGR paths for that region while the blob commands
+            # (CUSTOMMEMW/CUSTOMMEMR) still work - probe both, plus fallback
+            # addresses, and wire up whatever combination works.
+            pattern = bytes.fromhex("C3A5A55AC3A5A55AC3A5A55AC3A5A55A")
+            candidates = []
+            if self.config.chipconfig.da_payload_addr:
+                candidates.append(self.config.chipconfig.da_payload_addr - 0x300)
+            if self.config.chipconfig.brom_payload_addr:
+                candidates.append(self.config.chipconfig.brom_payload_addr)
+            candidates.append(0x40100000)
+
+            working = None
+            for cand in candidates:
+                # Blob path: CUSTOMMEMW / CUSTOMMEMR
+                okm = False
+                if self.custom_write(cand, pattern):
+                    d = self.custom_read(cand, len(pattern))
+                    okm = isinstance(d, (bytes, bytearray)) and bytes(d) == pattern
+                # Register path: CUSTOMREGW / CUSTOMREGR
+                okr = False
+                good = True
+                for i in range(0, len(pattern), 4):
+                    if not self.writeregister(cand + i, unpack("<I", pattern[i:i + 4])):
+                        good = False
+                        break
+                if good:
+                    rb = self.readmem(cand, len(pattern) // 4)
+                    okr = isinstance(rb, list) and b"".join([pack("<I", val) for val in rb]) == pattern
+                self.info(f"DXCC buffer probe {hex(cand)}: " +
+                          f"CUSTOMMEM={'ok' if okm else 'fail'}, CUSTOMREG={'ok' if okr else 'fail'}")
+                if working is None and (okm or okr):
+                    working = (cand, okm)
+
+            if working is None:
+                self.error("DXCC: no writable/readable derivation buffer found, " +
+                           "derived keys will be all zero.")
+            else:
+                cand, use_mem = working
+                self.info(f"DXCC: using derivation buffer {hex(cand)} " +
+                          f"({'CUSTOMMEM' if use_mem else 'CUSTOMREG'} path)")
+                hwc.dxcc.da_payload_addr = cand + 0x300
+                if use_mem:
+                    hwc.dxcc.writemem = self.custom_write
+
+                    def _buf_read32(addr, dwords=4, _self=hwc.dxcc):
+                        d = self.custom_read(addr, dwords * 4)
+                        if isinstance(d, (bytes, bytearray)) and len(d) == dwords * 4:
+                            return [int.from_bytes(d[i:i + 4], 'little') for i in range(0, len(d), 4)]
+                        return _self.read32(addr, dwords)
+
+                    hwc.dxcc.buf_read32 = _buf_read32
             # self.info("Generating provision key...")
             # platkey, provkey = hwc.aes_hwcrypt(btype="dxcc", mode="prov")
             self.info("Generating dxcc rpmbkey...")
